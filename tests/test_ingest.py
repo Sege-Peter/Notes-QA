@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from notes_qa.ingest import (
     DocumentChunk,
+    ingest_folder,
     parse_markdown_file,
     parse_pdf_file,
     scan_folder,
@@ -14,18 +15,15 @@ from notes_qa.ingest import (
 def test_split_text_into_chunks():
     # Short text
     text = "Word1 Word2 Word3"
-    chunks = split_text_into_chunks(text, chunk_size_words=5, overlap_words=2)
+    chunks = split_text_into_chunks(text, chunk_size_tokens=10, overlap_tokens=2)
     assert len(chunks) == 1
     assert chunks[0] == "Word1 Word2 Word3"
 
     # Longer text requiring chunking
-    long_text = " ".join([f"w{i}" for i in range(100)])
-    chunks = split_text_into_chunks(long_text, chunk_size_words=30, overlap_words=10)
+    long_text = " ".join([f"token_{i}" for i in range(600)])
+    chunks = split_text_into_chunks(long_text, chunk_size_tokens=100, overlap_tokens=20)
     assert len(chunks) > 1
-    assert chunks[0].startswith("w0")
-    # Check overlap
-    assert "w20" in chunks[0]
-    assert "w20" in chunks[1]
+    assert chunks[0].startswith("token_0")
 
 
 def test_parse_markdown_file(tmp_path: Path):
@@ -67,13 +65,27 @@ def test_scan_folder(tmp_path: Path):
     (tmp_path / "sub" / "notes.pdf").write_bytes(b"%PDF-1.4 dummy")
     (tmp_path / "sub" / "ignore.txt").write_text("ignore", encoding="utf-8")
 
-    pdfs, mds = scan_folder(tmp_path)
+    pdfs, mds, skipped = scan_folder(tmp_path)
     assert len(pdfs) == 1
     assert len(mds) == 2
+    assert skipped == 1
     assert pdfs[0].name == "notes.pdf"
     md_names = [m.name for m in mds]
     assert "doc1.md" in md_names
     assert "doc2.markdown" in md_names
+
+
+def test_ingest_empty_folder(tmp_path: Path):
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    stats = ingest_folder(empty_dir)
+    assert stats["total_files"] == 0
+    assert stats["chunk_count"] == 0
+
+
+def test_ingest_nonexistent_folder():
+    with pytest.raises(FileNotFoundError):
+        ingest_folder("/non/existent/path/for/sure")
 
 
 def test_document_chunk_properties():

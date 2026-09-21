@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
-
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 if TYPE_CHECKING:
     import chromadb
@@ -21,6 +20,8 @@ from notes_qa.config import (
     get_db_path,
     get_embedding_model,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -34,10 +35,12 @@ class DocumentChunk:
     doc_type: str  # 'pdf' or 'markdown'
     page: Optional[int] = None
     heading: Optional[str] = None
+    distance: Optional[float] = None
+    score: Optional[float] = None
 
     @property
     def source_citation(self) -> str:
-        """Formatted source string for display in sources list."""
+        """Formatted source string for terminal display in Sources section."""
         if self.doc_type == "pdf" and self.page is not None:
             return f"{self.file_name} — page {self.page}"
         elif self.doc_type == "markdown" and self.heading:
@@ -46,7 +49,7 @@ class DocumentChunk:
 
     @property
     def inline_citation_tag(self) -> str:
-        """Inline citation tag for grounding prompt and citations."""
+        """Inline citation tag for LLM prompting and inline references."""
         if self.doc_type == "pdf" and self.page is not None:
             return f"[{self.file_name}, p. {self.page}]"
         elif self.doc_type == "markdown" and self.heading:
@@ -56,10 +59,17 @@ class DocumentChunk:
 
 def split_text_into_chunks(
     text: str,
-    chunk_size_words: int = 400,
-    overlap_words: int = 50,
+    chunk_size_tokens: int = 500,
+    overlap_tokens: int = 50,
 ) -> list[str]:
-    """Split text into overlapping chunks of words (~500 tokens)."""
+    """Split text into overlapping chunks (~500 tokens with ~50 token overlap).
+
+    Using approx 1 token ≈ 0.75 words (approx 375 words for 500 tokens).
+    """
+    # 500 tokens ≈ 375-400 words; 50 tokens ≈ 35-40 words
+    chunk_size_words = max(50, int(chunk_size_tokens * 0.75))
+    overlap_words = max(5, int(overlap_tokens * 0.75))
+
     words = text.split()
     if not words:
         return []
@@ -75,12 +85,14 @@ def split_text_into_chunks(
         chunk_words = words[start : start + chunk_size_words]
         chunks.append(" ".join(chunk_words))
         start += step
+        if start + overlap_words >= len(words):
+            break
 
     return chunks
 
 
 def parse_markdown_file(file_path: Path) -> list[DocumentChunk]:
-    """Parse a Markdown file and split into chunks with heading context."""
+    """Parse a Markdown file, preserving heading context for each chunk."""
     try:
         content = file_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -118,7 +130,6 @@ def parse_markdown_file(file_path: Path) -> list[DocumentChunk]:
     for line in lines:
         match = heading_regex.match(line)
         if match:
-            # Flush previous section
             if current_lines:
                 flush_section(current_heading, current_lines)
                 current_lines = []
@@ -133,14 +144,14 @@ def parse_markdown_file(file_path: Path) -> list[DocumentChunk]:
 
 
 def parse_pdf_file(file_path: Path) -> list[DocumentChunk]:
-    """Extract text page-by-page from a PDF file and chunk it."""
+    """Extract text page-by-page from a PDF file using pypdf."""
     from pypdf import PdfReader
 
     chunks: list[DocumentChunk] = []
     try:
         reader = PdfReader(str(file_path))
     except Exception as e:
-        # Ignore unreadable or corrupt PDF
+        logger.warning("Failed to parse PDF %s: %s", file_path, e)
         return []
 
     for page_idx, page in enumerate(reader.pages):
@@ -176,13 +187,20 @@ def get_embedding_function(model_choice: Optional[str] = None) -> Any:
 
         openai_key = os.getenv("OPENAI_API_KEY")
         if not openai_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required when EMBEDDING_MODEL=openai")
+            raise ValueError(
+                "OPENAI_API_KEY environment variable is required when EMBEDDING_MODEL=openai"
+            )
         return embedding_functions.OpenAIEmbeddingFunction(
             api_key=openai_key,
-            model_name="text-embedding-3-small",
+            model_name=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        )
+    elif choice == "anthropic":
+        # Anthropic does not have a native embedding API. Notify and fallback to local.
+        logger.warning(
+            "Anthropic does not offer a standalone embeddings API endpoint. Falling back to local sentence-transformers."
         )
 
-    # Local embedding function
+    # Local default: all-MiniLM-L6-v2 via sentence-transformers or chromadb ONNX runtime
     try:
         from chromadb.utils import embedding_functions
 
@@ -190,7 +208,6 @@ def get_embedding_function(model_choice: Optional[str] = None) -> Any:
             model_name="all-MiniLM-L6-v2"
         )
     except Exception:
-        # Fallback to chromadb's default ONNX-based embedding function
         from chromadb.utils import embedding_functions
 
         return embedding_functions.DefaultEmbeddingFunction()
@@ -206,10 +223,10 @@ def get_chroma_client(db_path: Optional[str] = None) -> Any:
 
 
 def get_or_create_collection(
-    client: ClientAPI,
+    client: Any,
     rebuild: bool = False,
     embedding_fn: Any = None,
-) -> Collection:
+) -> Any:
     """Get existing collection or create new one, wiping if rebuild=True."""
     if rebuild:
         try:
@@ -227,10 +244,14 @@ def get_or_create_collection(
     )
 
 
-def scan_folder(folder_path: Path) -> tuple[list[Path], list[Path]]:
-    """Scan folder recursively for PDFs and Markdown files."""
+def scan_folder(folder_path: Path) -> tuple[list[Path], list[Path], int]:
+    """Scan folder recursively for PDFs and Markdown files.
+
+    Returns (pdf_files, md_files, skipped_unsupported_files_count).
+    """
     pdf_files: list[Path] = []
     md_files: list[Path] = []
+    skipped_count = 0
 
     for path in folder_path.rglob("*"):
         if not path.is_file():
@@ -240,8 +261,10 @@ def scan_folder(folder_path: Path) -> tuple[list[Path], list[Path]]:
             pdf_files.append(path)
         elif ext in [".md", ".markdown"]:
             md_files.append(path)
+        else:
+            skipped_count += 1
 
-    return sorted(pdf_files), sorted(md_files)
+    return sorted(pdf_files), sorted(md_files), skipped_count
 
 
 def ingest_folder(
@@ -250,13 +273,27 @@ def ingest_folder(
     rebuild: bool = False,
     embedding_fn: Any = None,
 ) -> dict[str, Any]:
-    """Scan folder, extract chunks, embed and store in Chroma."""
+    """Scan folder, extract chunks, embed and store in Chroma vector database."""
     folder_path = Path(folder).resolve()
-    if not folder_path.exists() or not folder_path.is_dir():
-        raise ValueError(f"Folder '{folder}' does not exist or is not a directory.")
+    if not folder_path.exists():
+        raise FileNotFoundError(f"Folder '{folder}' does not exist.")
+    if not folder_path.is_dir():
+        raise NotADirectoryError(f"Path '{folder}' is not a directory.")
 
-    pdf_files, md_files = scan_folder(folder_path)
+    pdf_files, md_files, skipped_count = scan_folder(folder_path)
     total_files = len(pdf_files) + len(md_files)
+
+    if total_files == 0:
+        return {
+            "folder": str(folder_path),
+            "total_files": 0,
+            "pdf_count": 0,
+            "md_count": 0,
+            "skipped_count": skipped_count,
+            "chunk_count": 0,
+            "elapsed_seconds": 0.0,
+            "db_path": get_db_path(db_path),
+        }
 
     chunks: list[DocumentChunk] = []
 
@@ -305,6 +342,7 @@ def ingest_folder(
         "total_files": total_files,
         "pdf_count": len(pdf_files),
         "md_count": len(md_files),
+        "skipped_count": skipped_count,
         "chunk_count": len(chunks),
         "elapsed_seconds": elapsed,
         "db_path": resolved_db_path,

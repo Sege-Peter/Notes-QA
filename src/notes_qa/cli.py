@@ -26,7 +26,7 @@ def main() -> None:
     "--rebuild",
     is_flag=True,
     default=False,
-    help="Rebuild the index from scratch.",
+    help="Rebuild the vector store from scratch.",
 )
 @click.option(
     "--db-path",
@@ -48,10 +48,21 @@ def ingest_cmd(folder: str, rebuild: bool, db_path: str | None) -> None:
         click.secho(f"Error during ingestion: {err}", fg="red", err=True)
         sys.exit(1)
 
+    if stats["total_files"] == 0:
+        click.secho(
+            f"No supported documents found in {folder} (searched for .pdf, .md, .markdown).",
+            fg="yellow",
+        )
+        if stats.get("skipped_count", 0) > 0:
+            click.echo(f"Skipped {stats['skipped_count']} unsupported files.")
+        return
+
     click.echo(
         f"Found {stats['total_files']} files "
         f"({stats['pdf_count']} PDFs, {stats['md_count']} Markdown)"
     )
+    if stats.get("skipped_count", 0) > 0:
+        click.echo(f"Skipped {stats['skipped_count']} unsupported files.")
     click.echo(f"Chunked into {stats['chunk_count']} segments")
     click.echo(f"Embedding... done in {stats['elapsed_seconds']:.1f}s")
     click.echo(f"Stored in {stats['db_path']}")
@@ -61,7 +72,7 @@ def ingest_cmd(folder: str, rebuild: bool, db_path: str | None) -> None:
 @click.argument("question", type=str)
 @click.option(
     "--top-k",
-    default=4,
+    default=5,
     show_default=True,
     type=int,
     help="Number of document chunks to retrieve.",
@@ -85,7 +96,7 @@ def ask_cmd(question: str, top_k: int, db_path: str | None) -> None:
 
     if not chunks:
         click.echo("Answer:")
-        click.echo("I could not find any notes in the index. Run 'notes-qa ingest <folder>' first.")
+        click.echo("No relevant information found in your notes for this question.")
         return
 
     try:

@@ -14,7 +14,7 @@ SYSTEM_PROMPT = """You are a helpful assistant that answers questions based stri
 Rules:
 1. Answer ONLY based on the facts provided in the Context below. Do NOT assume, extrapolate, or use outside knowledge.
 2. If the provided context does not contain enough information to answer the question, state:
-   "I could not find information about that in your notes."
+   "No relevant information found in your notes for this question."
 3. Cite your sources inline immediately following relevant claims, using the citation tags indicated for each excerpt (for example: [notes.md, "Section Name"] or [document.pdf, p. 12]).
 4. Keep the answer clear, grounded, and concise."""
 
@@ -77,7 +77,7 @@ def generate_answer(
 ) -> tuple[str, list[str]]:
     """Generate grounded answer from Claude with inline citations and source list."""
     if not chunks:
-        return ("I could not find information about that in your notes.", [])
+        return ("No relevant information found in your notes for this question.", [])
 
     resolved_key = api_key or get_anthropic_api_key()
     if not resolved_key and client is None:
@@ -120,7 +120,11 @@ def generate_answer(
     sources = get_unique_sources(chunks)
 
     # If model responded that it could not find info, clear sources
-    if "could not find information about that in your notes" in raw_answer.lower():
+    lowered = raw_answer.lower()
+    if (
+        "no relevant information found" in lowered
+        or "could not find information" in lowered
+    ):
         sources = []
 
     return raw_answer, sources

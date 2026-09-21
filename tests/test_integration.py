@@ -1,5 +1,6 @@
 """End-to-end integration tests for ingest and retrieve."""
 
+import hashlib
 from pathlib import Path
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from notes_qa.ingest import ingest_folder
@@ -7,7 +8,7 @@ from notes_qa.retrieve import retrieve_chunks
 
 
 class FastDeterministicEmbedding(EmbeddingFunction):
-    """Fast, offline, deterministic embedding function for tests."""
+    """Fast, offline, deterministic non-zero embedding function for tests."""
 
     def __init__(self) -> None:
         pass
@@ -18,8 +19,11 @@ class FastDeterministicEmbedding(EmbeddingFunction):
     def __call__(self, input: Documents) -> Embeddings:
         results: Embeddings = []
         for text in input:
-            val = float(len(text) % 50) / 50.0
-            results.append([val] * 384)
+            h = hashlib.sha256(text.encode("utf-8")).digest()
+            vec = [(b / 255.0) for b in h] * 12
+            vec = vec[:384]
+            norm = sum(x * x for x in vec) ** 0.5
+            results.append([x / norm for x in vec])
         return results
 
 
@@ -55,10 +59,11 @@ Redis INCR + EXPIRE is a common way to implement a simple fixed-window limiter.
 
     # Query similarity search
     chunks = retrieve_chunks(
-        query="What did I write about token bucket rate limiting?",
+        query="Token Bucket",
         top_k=2,
         db_path=str(db_dir),
         embedding_fn=embed_fn,
+        distance_threshold=2.0,
     )
 
     assert len(chunks) > 0

@@ -32,6 +32,7 @@ env/
 
 # Vector databases / local stores
 *.db
+.db/
 notes-qa.db/
 chroma.sqlite3
 

@@ -62,7 +62,10 @@ def test_format_qa_output():
 
 def test_generate_answer_empty_chunks():
     ans, sources = generate_answer("test query", [])
-    assert "could not find" in ans.lower()
+    assert (
+        "no relevant information found" in ans.lower()
+        or "could not find" in ans.lower()
+    )
     assert sources == []
 
 
