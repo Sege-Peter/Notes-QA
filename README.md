@@ -113,6 +113,22 @@ Answer:
 No relevant information found in your notes for this question.
 ```
 
+### Launch Live Interactive Web UI
+
+```bash
+notes-qa ui
+```
+
+```
+Starting notes-qa Live UI at http://127.0.0.1:8000 ...
+```
+
+Open **`http://localhost:8000`** in your browser to:
+- Ingest local folders or drag-and-drop `.pdf` and `.md` files
+- Ask questions with real-time markdown answers and highlighted inline citations
+- Inspect context receipts, hybrid BM25 scores, and vector distances
+- Configure models (`claude-sonnet-4-6`), Top-K, and API keys via the Settings modal
+
 ## Configuration
 
 | Env var | Description | Default |
@@ -159,8 +175,8 @@ pytest
 - [x] Semantic retrieval with inline citations
 - [x] Hybrid search (vector cosine similarity + BM25 keyword rank fusion)
 - [x] Relevance distance threshold cutoff to avoid hallucinations
+- [x] Live Interactive Web UI (`notes-qa ui`) with drag-and-drop ingestion & receipts viewer
 - [ ] Support for `.docx` and plain `.txt`
-- [ ] Web UI (Streamlit)
 
 ## License
 

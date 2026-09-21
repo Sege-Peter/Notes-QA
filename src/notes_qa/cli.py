@@ -112,5 +112,17 @@ def ask_cmd(question: str, top_k: int, db_path: str | None) -> None:
     click.echo(output)
 
 
+@main.command("ui")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind server to.")
+@click.option("--port", default=8000, show_default=True, type=int, help="Port to bind server to.")
+@click.option("--reload", is_flag=True, default=False, help="Enable auto-reload.")
+def ui_cmd(host: str, port: int, reload: bool) -> None:
+    """Launch the interactive Web UI."""
+    import uvicorn
+
+    click.echo(f"Starting notes-qa Live UI at http://{host}:{port} ...")
+    uvicorn.run("notes_qa.server:create_app", host=host, port=port, factory=True, reload=reload)
+
+
 if __name__ == "__main__":
     main()
