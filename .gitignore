@@ -35,6 +35,7 @@ env/
 .db/
 notes-qa.db/
 chroma.sqlite3
+uploaded_notes/
 
 # Testing & Linters
 .pytest_cache/

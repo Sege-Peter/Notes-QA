@@ -85,3 +85,28 @@ def test_api_ask(mock_retrieve, mock_generate, client):
 def test_api_ingest_not_found(client):
     response = client.post("/api/ingest", json={"folder": "/invalid/nonexistent/path"})
     assert response.status_code == 404
+
+
+@patch("notes_qa.server.generate_answer")
+@patch("notes_qa.server.retrieve_chunks")
+def test_api_ask_with_provider(mock_retrieve, mock_generate, client):
+    chunk = DocumentChunk(
+        chunk_id="c1",
+        text="Rate limiting",
+        file_path="/notes/rate.md",
+        file_name="rate.md",
+        doc_type="markdown",
+        heading="Token Bucket",
+    )
+    mock_retrieve.return_value = [chunk]
+    mock_generate.return_value = ("Extracted answer", ["source1"])
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "rate limiting", "top_k": 3, "provider": "offline"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["provider"] == "offline"
+    assert data["answer"] == "Extracted answer"
+

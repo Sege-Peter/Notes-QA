@@ -17,8 +17,11 @@ from notes_qa.config import (
     COLLECTION_NAME,
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_DB_PATH,
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_PROVIDER,
     get_anthropic_api_key,
     get_db_path,
+    get_gemini_api_key,
 )
 from notes_qa.generate import generate_answer
 from notes_qa.ingest import (
@@ -38,6 +41,7 @@ class IngestRequest(BaseModel):
 class AskRequest(BaseModel):
     question: str
     top_k: int = 5
+    provider: Optional[str] = "auto"
     api_key: Optional[str] = None
     model: Optional[str] = None
     enable_hybrid: bool = True
@@ -75,14 +79,21 @@ def create_app() -> FastAPI:
         except Exception:
             count = 0
 
-        api_key = get_anthropic_api_key()
+        has_anthropic = bool(get_anthropic_api_key())
+        has_gemini = bool(get_gemini_api_key())
+        default_prov = "gemini" if (has_gemini and not has_anthropic) else ("anthropic" if has_anthropic else "offline")
+
         return {
             "status": "online",
             "db_path": db_path,
             "collection_name": COLLECTION_NAME,
             "indexed_chunks": count,
-            "has_anthropic_key": bool(api_key),
-            "default_model": DEFAULT_ANTHROPIC_MODEL,
+            "has_anthropic_key": has_anthropic,
+            "has_gemini_key": has_gemini,
+            "default_provider": default_prov,
+            "default_model": DEFAULT_GEMINI_MODEL if default_prov == "gemini" else DEFAULT_ANTHROPIC_MODEL,
+            "gemini_model": DEFAULT_GEMINI_MODEL,
+            "anthropic_model": DEFAULT_ANTHROPIC_MODEL,
         }
 
     @app.post("/api/ingest")
@@ -153,7 +164,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/ask")
     async def ask_endpoint(req: AskRequest) -> dict[str, Any]:
-        """Retrieve context and generate grounded answer using Claude."""
+        """Retrieve context and generate grounded answer using Claude, Gemini, or Zero API Key offline mode."""
         chunks = retrieve_chunks(
             query=req.question,
             top_k=req.top_k,
@@ -164,8 +175,22 @@ def create_app() -> FastAPI:
             return {
                 "answer": "No relevant information found in your notes for this question.",
                 "sources": [],
+                "provider": req.provider or "offline",
                 "chunks": [],
             }
+
+        prov = req.provider or "auto"
+        if prov == "auto":
+            if req.api_key and req.api_key.startswith("AIza"):
+                prov = "gemini"
+            elif req.api_key and req.api_key.startswith("sk-ant"):
+                prov = "anthropic"
+            elif get_gemini_api_key() and not get_anthropic_api_key():
+                prov = "gemini"
+            elif get_anthropic_api_key():
+                prov = "anthropic"
+            else:
+                prov = "offline"
 
         try:
             answer, sources = generate_answer(
@@ -173,6 +198,7 @@ def create_app() -> FastAPI:
                 chunks=chunks,
                 api_key=req.api_key,
                 model=req.model,
+                provider=prov,
             )
         except ValueError as val_err:
             raise HTTPException(status_code=400, detail=str(val_err))
@@ -182,6 +208,7 @@ def create_app() -> FastAPI:
         return {
             "answer": answer,
             "sources": sources,
+            "provider": prov,
             "chunks": [
                 {
                     "chunk_id": c.chunk_id,
@@ -370,13 +397,20 @@ HTML_PAGE = """<!DOCTYPE html>
           </button>
         </div>
 
-        <!-- Sample Prompts -->
-        <div class="flex flex-wrap items-center gap-2 text-xs">
-          <span class="text-slate-500">Try:</span>
-          <button onclick="setQuery('What did I write about rate limiting?')" class="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-full border border-slate-700 transition">Rate Limiting</button>
-          <button onclick="setQuery('Explain Write-Ahead Logging in databases')" class="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-full border border-slate-700 transition">Write-Ahead Log (WAL)</button>
-          <button onclick="setQuery('What does Slow Start do in TCP?')" class="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-full border border-slate-700 transition">TCP Slow Start</button>
-          <button onclick="setQuery('Who won the 1998 World Cup?')" class="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 text-rose-400/80 rounded-full border border-rose-900/40 transition">Irrelevant Test</button>
+        <!-- Sample Prompts and Active Mode Badge -->
+        <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs pt-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-slate-500">Try:</span>
+            <button onclick="setQuery('What did I write about rate limiting?')" class="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-full border border-slate-700 transition">Rate Limiting</button>
+            <button onclick="setQuery('Explain Write-Ahead Logging in databases')" class="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-full border border-slate-700 transition">Write-Ahead Log (WAL)</button>
+            <button onclick="setQuery('What does Slow Start do in TCP?')" class="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-full border border-slate-700 transition">TCP Slow Start</button>
+            <button onclick="setQuery('Who won the 1998 World Cup?')" class="px-2.5 py-1 bg-slate-800/80 hover:bg-slate-700 text-rose-400/80 rounded-full border border-rose-900/40 transition">Irrelevant Test</button>
+          </div>
+          <button onclick="toggleSettingsModal()" class="text-[11px] text-slate-400 hover:text-white flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-950 border border-slate-800 transition">
+            <span id="activeDot" class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span id="activeModeLabel" class="font-mono text-slate-300">Provider: Zero API Key</span>
+            <span class="text-slate-500 hover:text-slate-300">⚙</span>
+          </button>
         </div>
       </div>
 
@@ -393,10 +427,13 @@ HTML_PAGE = """<!DOCTYPE html>
         <!-- Answer Card -->
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-sm space-y-4">
           <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-            <h2 class="text-base font-semibold text-white flex items-center gap-2">
-              <svg class="w-5 h-5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-              Grounded Answer
-            </h2>
+            <div class="flex items-center gap-2">
+              <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                <svg class="w-5 h-5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                Grounded Answer
+              </h2>
+              <span id="resultProviderBadge" class="text-[10px] px-2 py-0.5 rounded-full font-mono bg-slate-800 text-slate-400 border border-slate-700"></span>
+            </div>
             <button onclick="copyAnswer()" class="text-xs text-slate-400 hover:text-white flex items-center gap-1">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path></svg>
               Copy
@@ -437,26 +474,47 @@ HTML_PAGE = """<!DOCTYPE html>
   <div id="settingsModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-800 rounded-xl max-w-md w-full p-6 space-y-5 shadow-2xl">
       <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-        <h3 class="font-bold text-white text-base">Settings & API Keys</h3>
+        <h3 class="font-bold text-white text-base flex items-center gap-2">
+          <svg class="w-4 h-4 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+          Settings & AI Provider
+        </h3>
         <button onclick="toggleSettingsModal()" class="text-slate-400 hover:text-white">&times;</button>
       </div>
 
       <div class="space-y-4 text-sm">
+        <!-- AI Provider Selection -->
         <div>
-          <label class="block text-xs font-medium text-slate-400 mb-1">Anthropic API Key</label>
-          <input type="password" id="apiKeyInput" placeholder="sk-ant-api..." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-brand-500 font-mono">
-          <p class="text-[11px] text-slate-500 mt-1">If set, overrides the environment variable ANTHROPIC_API_KEY for this session.</p>
-        </div>
-
-        <div>
-          <label class="block text-xs font-medium text-slate-400 mb-1">Claude Model</label>
-          <select id="modelSelect" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-brand-500">
-            <option value="claude-sonnet-4-6" selected>claude-sonnet-4-6 (Default)</option>
-            <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022</option>
-            <option value="claude-3-haiku-20240307">claude-3-haiku-20240307</option>
+          <label class="block text-xs font-medium text-slate-400 mb-1">AI Provider / Generation Mode</label>
+          <select id="providerSelect" onchange="onProviderChange()" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-brand-500 font-medium">
+            <option value="offline">Zero API Key Mode (100% Offline & Free)</option>
+            <option value="gemini">Google Gemini (Free tier with API key)</option>
+            <option value="anthropic">Anthropic Claude (claude-sonnet-4-6)</option>
           </select>
         </div>
 
+        <!-- API Key Input Container -->
+        <div id="apiKeyContainer" class="hidden">
+          <label id="apiKeyLabel" class="block text-xs font-medium text-slate-400 mb-1">API Key</label>
+          <input type="password" id="apiKeyInput" placeholder="" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-brand-500 font-mono">
+          <p id="apiKeyHint" class="text-[11px] text-slate-500 mt-1"></p>
+        </div>
+
+        <!-- Zero API Key Info Box -->
+        <div id="offlineInfoBox" class="p-3 rounded-lg bg-emerald-950/30 border border-emerald-800/50 text-xs text-emerald-300 space-y-1">
+          <p class="font-semibold flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span> Zero API Key Mode Active
+          </p>
+          <p class="text-emerald-400/80 leading-relaxed">No external API keys or subscriptions needed. Answers and inline citations are synthesized directly from your retrieved notes completely offline and privately on your machine.</p>
+        </div>
+
+        <!-- Model Selection -->
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1">Model</label>
+          <select id="modelSelect" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-brand-500">
+          </select>
+        </div>
+
+        <!-- Top-K Slider -->
         <div>
           <label class="block text-xs font-medium text-slate-400 mb-1">Top-K Retrieval</label>
           <div class="flex items-center gap-3">
@@ -465,6 +523,7 @@ HTML_PAGE = """<!DOCTYPE html>
           </div>
         </div>
 
+        <!-- Hybrid Search Toggle -->
         <div class="flex items-center justify-between pt-2">
           <label class="text-xs font-medium text-slate-300">Hybrid Search (Vector + BM25)</label>
           <input type="checkbox" id="hybridToggle" checked class="rounded bg-slate-950 border-slate-800 text-brand-600 focus:ring-0">
@@ -478,24 +537,114 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 
   <script>
-    let userApiKey = localStorage.getItem('notes_qa_api_key') || '';
-    let selectedModel = localStorage.getItem('notes_qa_model') || 'claude-sonnet-4-6';
+    const MODEL_OPTIONS = {
+      offline: [
+        { value: 'extractive', label: 'Extractive Grounded Synthesizer (Local, 0 Setup)' },
+        { value: 'ollama:llama3', label: 'Local Ollama (llama3)' }
+      ],
+      gemini: [
+        { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash (Recommended - Fast & Free tier)' },
+        { value: 'gemini-1.5-flash', label: 'gemini-1.5-flash' },
+        { value: 'gemini-1.5-pro', label: 'gemini-1.5-pro' }
+      ],
+      anthropic: [
+        { value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6 (Default)' },
+        { value: 'claude-3-5-sonnet-20241022', label: 'claude-3-5-sonnet-20241022' },
+        { value: 'claude-3-haiku-20240307', label: 'claude-3-haiku-20240307' }
+      ]
+    };
 
-    document.getElementById('apiKeyInput').value = userApiKey;
-    document.getElementById('modelSelect').value = selectedModel;
+    let selectedProvider = localStorage.getItem('notes_qa_provider') || 'offline';
+    let geminiApiKey = localStorage.getItem('notes_qa_gemini_key') || '';
+    let anthropicApiKey = localStorage.getItem('notes_qa_anthropic_key') || '';
+    let selectedModel = localStorage.getItem('notes_qa_model') || '';
+
+    function onProviderChange() {
+      const prov = document.getElementById('providerSelect').value;
+      const keyContainer = document.getElementById('apiKeyContainer');
+      const offlineBox = document.getElementById('offlineInfoBox');
+      const keyLabel = document.getElementById('apiKeyLabel');
+      const keyInput = document.getElementById('apiKeyInput');
+      const keyHint = document.getElementById('apiKeyHint');
+      const modelSelect = document.getElementById('modelSelect');
+
+      if (prov === 'offline') {
+        keyContainer.classList.add('hidden');
+        offlineBox.classList.remove('hidden');
+      } else if (prov === 'gemini') {
+        keyContainer.classList.remove('hidden');
+        offlineBox.classList.add('hidden');
+        keyLabel.innerText = 'Google Gemini API Key';
+        keyInput.placeholder = 'AIzaSy...';
+        keyInput.value = geminiApiKey;
+        keyHint.innerHTML = 'Get a free key instantly at <a href="https://aistudio.google.com/app/apikey" target="_blank" class="text-brand-400 underline font-medium">aistudio.google.com</a>.';
+      } else if (prov === 'anthropic') {
+        keyContainer.classList.remove('hidden');
+        offlineBox.classList.add('hidden');
+        keyLabel.innerText = 'Anthropic Claude API Key';
+        keyInput.placeholder = 'sk-ant-api...';
+        keyInput.value = anthropicApiKey;
+        keyHint.innerHTML = 'Get an API key from <a href="https://console.anthropic.com" target="_blank" class="text-brand-400 underline font-medium">console.anthropic.com</a>.';
+      }
+
+      // Populate model list
+      modelSelect.innerHTML = '';
+      const opts = MODEL_OPTIONS[prov] || [];
+      opts.forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.innerText = opt.label;
+        modelSelect.appendChild(o);
+      });
+
+      if (selectedModel && opts.some(o => o.value === selectedModel)) {
+        modelSelect.value = selectedModel;
+      }
+    }
 
     function toggleSettingsModal() {
       const modal = document.getElementById('settingsModal');
       modal.classList.toggle('hidden');
+      if (!modal.classList.contains('hidden')) {
+        document.getElementById('providerSelect').value = selectedProvider;
+        onProviderChange();
+      }
     }
 
     function saveSettings() {
-      userApiKey = document.getElementById('apiKeyInput').value.trim();
+      selectedProvider = document.getElementById('providerSelect').value;
+      const inputVal = document.getElementById('apiKeyInput').value.trim();
+
+      if (selectedProvider === 'gemini') {
+        geminiApiKey = inputVal;
+        localStorage.setItem('notes_qa_gemini_key', geminiApiKey);
+      } else if (selectedProvider === 'anthropic') {
+        anthropicApiKey = inputVal;
+        localStorage.setItem('notes_qa_anthropic_key', anthropicApiKey);
+      }
+
       selectedModel = document.getElementById('modelSelect').value;
-      localStorage.setItem('notes_qa_api_key', userApiKey);
+      localStorage.setItem('notes_qa_provider', selectedProvider);
       localStorage.setItem('notes_qa_model', selectedModel);
+
       toggleSettingsModal();
+      updateModeIndicators();
       refreshStatus();
+    }
+
+    function updateModeIndicators() {
+      const pill = document.getElementById('activeModeLabel');
+      const dot = document.getElementById('activeDot');
+      if (selectedProvider === 'offline') {
+        pill.innerText = 'Mode: Zero API Key (Offline)';
+        dot.className = 'w-2 h-2 rounded-full bg-emerald-400';
+      } else if (selectedProvider === 'gemini') {
+        pill.innerText = 'Provider: Google Gemini';
+        dot.className = 'w-2 h-2 rounded-full bg-sky-400';
+      } else {
+        pill.innerText = 'Provider: Claude (Anthropic)';
+        dot.className = 'w-2 h-2 rounded-full bg-indigo-400';
+      }
     }
 
     function setQuery(text) {
@@ -507,13 +656,22 @@ HTML_PAGE = """<!DOCTYPE html>
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
-        const badge = document.getElementById('statusBadge');
         const text = document.getElementById('statusText');
-        
-        text.innerHTML = `DB: <span class="font-bold text-emerald-400">${data.indexed_chunks}</span> segments indexed`;
-        if (!data.has_anthropic_key && !userApiKey) {
-          text.innerHTML += ` <span class="text-amber-400 ml-1">(No API Key)</span>`;
+
+        if (!localStorage.getItem('notes_qa_provider')) {
+          if (data.has_gemini_key) selectedProvider = 'gemini';
+          else if (data.has_anthropic_key) selectedProvider = 'anthropic';
+          else selectedProvider = 'offline';
+          localStorage.setItem('notes_qa_provider', selectedProvider);
         }
+
+        updateModeIndicators();
+
+        const provBadge = selectedProvider === 'offline' 
+          ? '<span class="text-emerald-400 font-semibold">Zero API Key (Offline)</span>' 
+          : (selectedProvider === 'gemini' ? '<span class="text-sky-400 font-semibold">Gemini</span>' : '<span class="text-indigo-400 font-semibold">Claude</span>');
+
+        text.innerHTML = `DB: <span class="font-bold text-white">${data.indexed_chunks}</span> segments | Mode: ${provBadge}`;
       } catch (err) {
         document.getElementById('statusText').innerText = 'Backend Offline';
       }
@@ -604,6 +762,10 @@ HTML_PAGE = """<!DOCTYPE html>
       results.classList.add('hidden');
       askBtn.disabled = true;
 
+      const currentKey = selectedProvider === 'gemini' 
+        ? geminiApiKey 
+        : (selectedProvider === 'anthropic' ? anthropicApiKey : null);
+
       try {
         const res = await fetch('/api/ask', {
           method: 'POST',
@@ -611,8 +773,9 @@ HTML_PAGE = """<!DOCTYPE html>
           body: JSON.stringify({
             question,
             top_k,
-            api_key: userApiKey || null,
-            model: selectedModel || 'claude-sonnet-4-6',
+            provider: selectedProvider,
+            api_key: currentKey || null,
+            model: selectedModel || null,
             enable_hybrid
           })
         });
@@ -624,6 +787,19 @@ HTML_PAGE = """<!DOCTYPE html>
         let parsed = marked.parse(data.answer);
         parsed = parsed.replace(/\\[([^\\]]+)\\]/g, '<span class="citation-badge">[$1]</span>');
         document.getElementById('answerContent').innerHTML = parsed;
+
+        // Result provider tag
+        const tag = document.getElementById('resultProviderBadge');
+        if (data.provider === 'offline') {
+          tag.innerText = 'Zero API Key (Offline)';
+          tag.className = 'text-[10px] px-2 py-0.5 rounded-full font-mono bg-emerald-950/60 text-emerald-300 border border-emerald-800';
+        } else if (data.provider === 'gemini') {
+          tag.innerText = 'Google Gemini';
+          tag.className = 'text-[10px] px-2 py-0.5 rounded-full font-mono bg-sky-950/60 text-sky-300 border border-sky-800';
+        } else {
+          tag.innerText = 'Claude';
+          tag.className = 'text-[10px] px-2 py-0.5 rounded-full font-mono bg-indigo-950/60 text-indigo-300 border border-indigo-800';
+        }
 
         // Render Sources
         const sourcesDiv = document.getElementById('sourcesList');
@@ -682,6 +858,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     // Initial load
+    updateModeIndicators();
     refreshStatus();
   </script>
 </body>

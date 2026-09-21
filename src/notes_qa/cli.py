@@ -82,7 +82,25 @@ def ingest_cmd(folder: str, rebuild: bool, db_path: str | None) -> None:
     default=None,
     help=f"Path where vector store is persisted (default: {DEFAULT_DB_PATH}).",
 )
-def ask_cmd(question: str, top_k: int, db_path: str | None) -> None:
+@click.option(
+    "--provider",
+    type=click.Choice(["auto", "gemini", "anthropic", "offline"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="LLM provider: 'gemini', 'anthropic', or 'offline' (Zero API Key mode).",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Model name (e.g. 'gemini-2.5-flash', 'claude-sonnet-4-6', 'offline').",
+)
+def ask_cmd(
+    question: str,
+    top_k: int,
+    db_path: str | None,
+    provider: str,
+    model: str | None,
+) -> None:
     """Ask a question grounded in your indexed notes and PDFs."""
     try:
         chunks = retrieve_chunks(
@@ -99,8 +117,28 @@ def ask_cmd(question: str, top_k: int, db_path: str | None) -> None:
         click.echo("No relevant information found in your notes for this question.")
         return
 
+    from notes_qa.config import get_anthropic_api_key, get_gemini_api_key
+
+    resolved_provider = provider.lower() if provider else "auto"
+    if resolved_provider == "auto":
+        if get_anthropic_api_key():
+            resolved_provider = "anthropic"
+        elif get_gemini_api_key():
+            resolved_provider = "gemini"
+        else:
+            click.secho(
+                "[notes-qa] No API key detected. Running in Zero API Key (Offline) mode.",
+                fg="cyan",
+            )
+            resolved_provider = "offline"
+
     try:
-        answer, sources = generate_answer(query=question, chunks=chunks)
+        answer, sources = generate_answer(
+            query=question,
+            chunks=chunks,
+            model=model,
+            provider=resolved_provider,
+        )
     except ValueError as val_err:
         click.secho(f"Configuration error: {val_err}", fg="yellow", err=True)
         sys.exit(1)

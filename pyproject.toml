@@ -17,6 +17,7 @@ dependencies = [
     "pypdf>=4.0.0",
     "chromadb>=0.4.22",
     "anthropic>=0.20.0",
+    "google-genai>=1.0.0",
     "python-dotenv>=1.0.0",
     "sentence-transformers>=2.2.0",
 ]

@@ -92,3 +92,50 @@ def test_generate_answer_mock_client(sample_chunks):
     assert 'Token bucket smooths traffic [rate-limiting.md, "Token Bucket"].' in ans
     assert 'rate-limiting.md — "Token Bucket"' in sources
     assert "system-design.pdf — page 12" in sources
+
+
+def test_generate_answer_gemini_missing_api_key(sample_chunks, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="GEMINI_API_KEY is not set"):
+        generate_answer("query", sample_chunks, provider="gemini", api_key=None, client=None)
+
+
+def test_generate_answer_gemini_mock_client(sample_chunks):
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = 'Token bucket is preferred for bursty traffic [rate-limiting.md, "Token Bucket"].'
+    mock_client.models.generate_content.return_value = mock_response
+
+    ans, sources = generate_answer(
+        query="Explain token bucket",
+        chunks=sample_chunks,
+        client=mock_client,
+        provider="gemini",
+    )
+
+    assert "Token bucket is preferred for bursty traffic" in ans
+    assert 'rate-limiting.md — "Token Bucket"' in sources
+
+
+def test_generate_answer_offline_zero_api_key(sample_chunks):
+    ans, sources = generate_answer(
+        query="Explain token bucket rate limiting",
+        chunks=sample_chunks,
+        provider="offline",
+    )
+
+    assert "Based on your notes:" in ans
+    assert '[rate-limiting.md, "Token Bucket"]' in ans
+    assert len(sources) > 0
+    assert 'rate-limiting.md — "Token Bucket"' in sources
+
+
+def test_generate_answer_offline_irrelevant(sample_chunks):
+    ans, sources = generate_answer(
+        query="Who was Cleopatra?",
+        chunks=sample_chunks,
+        provider="offline",
+    )
+    assert "No relevant information found in your notes for this question." in ans
+    assert sources == []
+
