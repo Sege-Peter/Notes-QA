@@ -110,3 +110,25 @@ def test_api_ask_with_provider(mock_retrieve, mock_generate, client):
     assert data["provider"] == "offline"
     assert data["answer"] == "Extracted answer"
 
+
+
+def test_api_upload_rejects_unsupported_files(client):
+    response = client.post(
+        "/api/upload",
+        files=[("files", ("evil.exe", b"binary", "application/octet-stream"))],
+    )
+    assert response.status_code == 400
+
+
+def test_ui_escapes_untrusted_content(client):
+    response = client.get("/")
+    assert "function escapeHtml" in response.text
+    assert "${escapeHtml(chunk.text)}" in response.text
+
+
+def test_ui_works_without_cdn_assets(client):
+    # The offline mode must not hard-depend on CDN-hosted scripts.
+    html = client.get("/").text
+    assert "if (window.tailwind)" in html
+    assert "if (window.marked)" in html
+    assert "marked.parse(data.answer" not in html

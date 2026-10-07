@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from notes_qa import __version__
 from notes_qa.config import (
     COLLECTION_NAME,
     DEFAULT_ANTHROPIC_MODEL,
@@ -31,6 +32,9 @@ from notes_qa.ingest import (
     ingest_folder,
 )
 from notes_qa.retrieve import retrieve_chunks
+
+
+SUPPORTED_UPLOAD_SUFFIXES = {".pdf", ".md", ".markdown"}
 
 
 class IngestRequest(BaseModel):
@@ -57,7 +61,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="notes-qa Live UI",
         description="Interactive RAG interface for personal notes and PDFs",
-        version="0.1.0",
+        version=__version__,
     )
 
     app.add_middleware(
@@ -124,15 +128,33 @@ def create_app() -> FastAPI:
         upload_dir.mkdir(exist_ok=True)
 
         saved_files = []
+        rejected_files = []
         for file in files:
-            filename = Path(file.filename).name
+            filename = Path(file.filename or "").name
+            if not filename or Path(filename).suffix.lower() not in SUPPORTED_UPLOAD_SUFFIXES:
+                rejected_files.append(filename or "<unnamed>")
+                continue
             dest = upload_dir / filename
             with dest.open("wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
             saved_files.append(str(dest))
 
-        stats = ingest_folder(folder=upload_dir, rebuild=rebuild)
-        return {"success": True, "saved_files": saved_files, "stats": stats}
+        if not saved_files:
+            raise HTTPException(
+                status_code=400,
+                detail="No supported files uploaded (expected .pdf, .md or .markdown).",
+            )
+
+        try:
+            stats = ingest_folder(folder=upload_dir, rebuild=rebuild)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "success": True,
+            "saved_files": saved_files,
+            "rejected_files": rejected_files,
+            "stats": stats,
+        }
 
     @app.post("/api/retrieve")
     async def search_endpoint(req: SearchRequest) -> dict[str, Any]:
@@ -245,7 +267,8 @@ HTML_PAGE = """<!DOCTYPE html>
   <!-- Marked.js for Markdown -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script>
-    tailwind.config = {
+    // CDN assets may be unreachable when running fully offline; degrade gracefully.
+    if (window.tailwind) tailwind.config = {
       darkMode: 'class',
       theme: {
         extend: {
@@ -263,6 +286,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
   </script>
   <style>
+    .hidden { display: none !important; }
     .citation-badge {
       cursor: pointer;
       background: rgba(99, 102, 241, 0.15);
@@ -647,6 +671,35 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
+    function renderMarkdown(text) {
+      const safe = String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      if (window.marked) return marked.parse(safe);
+      // Minimal fallback renderer used when the marked.js CDN is unavailable.
+      const out = [];
+      let inList = false;
+      for (const line of safe.split('\\n')) {
+        const item = line.match(/^[-*] (.*)$/);
+        if (item) {
+          if (!inList) { out.push('<ul>'); inList = true; }
+          out.push('<li>' + item[1] + '</li>');
+          continue;
+        }
+        if (inList) { out.push('</ul>'); inList = false; }
+        if (line.trim()) out.push('<p>' + line + '</p>');
+      }
+      if (inList) out.push('</ul>');
+      return out.join('');
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function setQuery(text) {
       document.getElementById('queryInput').value = text;
       executeAsk();
@@ -688,7 +741,7 @@ HTML_PAGE = """<!DOCTYPE html>
       btn.disabled = true;
       btn.innerHTML = '<div class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> Scanning & Indexing...';
       logDiv.classList.remove('hidden');
-      logDiv.innerHTML = `<span class="text-slate-500">Scanning ${folder} ...</span><br>`;
+      logDiv.innerHTML = `<span class="text-slate-500">Scanning ${escapeHtml(folder)} ...</span><br>`;
 
       try {
         const res = await fetch('/api/ingest', {
@@ -705,11 +758,11 @@ HTML_PAGE = """<!DOCTYPE html>
           <div>Files scanned: ${s.total_files} (${s.pdf_count} PDFs, ${s.md_count} Markdown)</div>
           <div>Chunks created: ${s.chunk_count} segments</div>
           <div>Time elapsed: ${s.elapsed_seconds.toFixed(2)}s</div>
-          <div class="text-slate-500">Stored at: ${s.db_path}</div>
+          <div class="text-slate-500">Stored at: ${escapeHtml(s.db_path)}</div>
         `;
         refreshStatus();
       } catch (err) {
-        logDiv.innerHTML = `<span class="text-rose-400 font-bold">Error:</span> ${err.message}`;
+        logDiv.innerHTML = `<span class="text-rose-400 font-bold">Error:</span> ${escapeHtml(err.message)}`;
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg> Ingest Folder';
@@ -743,7 +796,7 @@ HTML_PAGE = """<!DOCTYPE html>
         `;
         refreshStatus();
       } catch (err) {
-        logDiv.innerHTML = `<span class="text-rose-400 font-bold">Error:</span> ${err.message}`;
+        logDiv.innerHTML = `<span class="text-rose-400 font-bold">Error:</span> ${escapeHtml(err.message)}`;
       }
     }
 
@@ -784,7 +837,7 @@ HTML_PAGE = """<!DOCTYPE html>
         if (!res.ok) throw new Error(data.detail || 'Failed to generate answer');
 
         // Render Markdown Answer with highlighted inline citations
-        let parsed = marked.parse(data.answer);
+        let parsed = renderMarkdown(data.answer);
         parsed = parsed.replace(/\\[([^\\]]+)\\]/g, '<span class="citation-badge">[$1]</span>');
         document.getElementById('answerContent').innerHTML = parsed;
 
@@ -828,13 +881,13 @@ HTML_PAGE = """<!DOCTYPE html>
             const icon = chunk.doc_type === 'pdf' ? '📄 PDF' : '📝 MD';
             card.innerHTML = `
               <div class="flex items-center justify-between">
-                <span class="font-mono font-semibold text-slate-300">${icon} ${chunk.source_citation}</span>
+                <span class="font-mono font-semibold text-slate-300">${icon} ${escapeHtml(chunk.source_citation)}</span>
                 <div class="flex items-center gap-2">
                   <span class="px-2 py-0.5 rounded bg-brand-500/10 text-brand-300 border border-brand-500/20 font-mono">Hybrid Score: ${chunk.score !== null ? chunk.score : 'N/A'}</span>
                   <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">Dist: ${chunk.distance !== null ? chunk.distance : 'N/A'}</span>
                 </div>
               </div>
-              <p class="text-slate-300 leading-relaxed font-mono bg-slate-900/60 p-2.5 rounded border border-slate-800/80 whitespace-pre-wrap">${chunk.text}</p>
+              <p class="text-slate-300 leading-relaxed font-mono bg-slate-900/60 p-2.5 rounded border border-slate-800/80 whitespace-pre-wrap">${escapeHtml(chunk.text)}</p>
             `;
             chunksList.appendChild(card);
           });

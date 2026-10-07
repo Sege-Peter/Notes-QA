@@ -69,3 +69,45 @@ Redis INCR + EXPIRE is a common way to implement a simple fixed-window limiter.
     assert len(chunks) > 0
     file_names = [c.file_name for c in chunks]
     assert "rate-limiting-notes.md" in file_names
+
+
+def _collection_ids(db_dir: Path) -> list[str]:
+    from notes_qa.ingest import get_chroma_client
+
+    client = get_chroma_client(str(db_dir))
+    return client.get_collection("notes_qa").get()["ids"]
+
+
+def test_same_named_files_in_subfolders_do_not_collide(tmp_path: Path):
+    notes_dir = tmp_path / "notes"
+    (notes_dir / "a").mkdir(parents=True)
+    (notes_dir / "b").mkdir(parents=True)
+    (notes_dir / "a" / "README.md").write_text("# A\n\nAlpha project notes about caching.\n")
+    (notes_dir / "b" / "README.md").write_text("# B\n\nBeta project notes about queues.\n")
+    db_dir = tmp_path / "db"
+
+    stats = ingest_folder(
+        folder=notes_dir,
+        db_path=str(db_dir),
+        rebuild=True,
+        embedding_fn=FastDeterministicEmbedding(),
+    )
+
+    assert stats["chunk_count"] == 2
+    assert len(_collection_ids(db_dir)) == 2
+
+
+def test_reingest_removes_stale_chunks(tmp_path: Path):
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+    db_dir = tmp_path / "db"
+    note = notes_dir / "notes.md"
+    note.write_text("# One\n\nFirst section text.\n\n# Two\n\nSecond section text.\n")
+    embed_fn = FastDeterministicEmbedding()
+
+    ingest_folder(folder=notes_dir, db_path=str(db_dir), embedding_fn=embed_fn)
+    assert len(_collection_ids(db_dir)) == 2
+
+    note.write_text("# One\n\nOnly one section remains.\n")
+    ingest_folder(folder=notes_dir, db_path=str(db_dir), embedding_fn=embed_fn)
+    assert len(_collection_ids(db_dir)) == 1

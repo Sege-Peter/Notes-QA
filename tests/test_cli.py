@@ -94,3 +94,12 @@ def test_cli_ask_empty_or_irrelevant(mock_retrieve):
     result = runner.invoke(main, ["ask", "What did I write?"])
     assert result.exit_code == 0
     assert "No relevant information found in your notes for this question" in result.output
+
+
+def test_cli_version():
+    from notes_qa import __version__
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--version"])
+    assert result.exit_code == 0
+    assert __version__ in result.output

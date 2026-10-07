@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from notes_qa import __version__
 from notes_qa.config import DEFAULT_DB_PATH
 from notes_qa.generate import format_qa_output, generate_answer
 from notes_qa.ingest import ingest_folder
@@ -14,7 +15,7 @@ from notes_qa.retrieve import retrieve_chunks
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="notes-qa")
+@click.version_option(version=__version__, prog_name="notes-qa")
 def main() -> None:
     """notes-qa: Grounded question answering over your personal notes and PDFs."""
     pass
@@ -156,7 +157,16 @@ def ask_cmd(
 @click.option("--reload", is_flag=True, default=False, help="Enable auto-reload.")
 def ui_cmd(host: str, port: int, reload: bool) -> None:
     """Launch the interactive Web UI."""
-    import uvicorn
+    try:
+        import uvicorn
+        import fastapi  # noqa: F401
+    except ImportError:
+        click.secho(
+            "The web UI needs extra dependencies. Install them with: pip install 'notes-qa[ui]'",
+            fg="red",
+            err=True,
+        )
+        sys.exit(1)
 
     click.echo(f"Starting notes-qa Live UI at http://{host}:{port} ...")
     uvicorn.run("notes_qa.server:create_app", host=host, port=port, factory=True, reload=reload)

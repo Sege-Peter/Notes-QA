@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -55,6 +56,12 @@ class DocumentChunk:
         elif self.doc_type == "markdown" and self.heading:
             return f'[{self.file_name}, "{self.heading}"]'
         return f"[{self.file_name}]"
+
+
+def _file_id_prefix(file_path: Path) -> str:
+    """Stable chunk-ID prefix unique per absolute path, so same-named files don't collide."""
+    digest = hashlib.sha1(str(file_path.resolve()).encode("utf-8")).hexdigest()[:10]
+    return f"{file_path.name}_{digest}"
 
 
 def split_text_into_chunks(
@@ -114,7 +121,7 @@ def parse_markdown_file(file_path: Path) -> list[DocumentChunk]:
             return
         split_segments = split_text_into_chunks(text)
         for sub_idx, segment in enumerate(split_segments):
-            chunk_id = f"{file_path.name}_s{section_index}_c{sub_idx}"
+            chunk_id = f"{_file_id_prefix(file_path)}_s{section_index}_c{sub_idx}"
             chunks.append(
                 DocumentChunk(
                     chunk_id=chunk_id,
@@ -163,7 +170,7 @@ def parse_pdf_file(file_path: Path) -> list[DocumentChunk]:
 
         segments = split_text_into_chunks(page_text)
         for seg_idx, segment in enumerate(segments):
-            chunk_id = f"{file_path.name}_p{page_num}_c{seg_idx}"
+            chunk_id = f"{_file_id_prefix(file_path)}_p{page_num}_c{seg_idx}"
             chunks.append(
                 DocumentChunk(
                     chunk_id=chunk_id,
@@ -311,6 +318,15 @@ def ingest_folder(
         rebuild=rebuild,
         embedding_fn=embedding_fn,
     )
+
+    if not rebuild:
+        # Drop previously indexed chunks for these files so edits that shrink a
+        # document don't leave stale segments behind.
+        for path in pdf_files + md_files:
+            try:
+                collection.delete(where={"file_path": str(path.resolve())})
+            except Exception as e:
+                logger.debug("Could not clear old chunks for %s: %s", path, e)
 
     if chunks:
         # Batch insert to avoid collection batch size limits

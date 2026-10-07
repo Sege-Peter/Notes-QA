@@ -72,6 +72,12 @@ pip install -e .
 cp .env.example .env
 ```
 
+To use the Web UI, install the `ui` extra (or `dev`, which includes it):
+
+```bash
+pip install -e ".[ui]"
+```
+
 Or using `uv`:
 
 ```bash
@@ -95,6 +101,9 @@ Chunked into 342 segments
 Embedding... done in 12.4s
 Stored in ./.db
 ```
+
+Re-running `ingest` on the same folder updates changed files in place and
+drops segments that no longer exist, so the index never serves stale text.
 
 Rebuild index from scratch:
 
@@ -196,7 +205,9 @@ notes-qa/
 │   ├── test_cli.py
 │   ├── test_server.py
 │   └── test_integration.py
+├── .github/workflows/  # CI (tests + build) and PyPI publishing
 ├── .env.example
+├── LICENSE
 ├── pyproject.toml
 └── README.md
 ```
@@ -206,8 +217,11 @@ notes-qa/
 ## Running Tests
 
 ```bash
+pip install -e ".[dev]"
 pytest
 ```
+
+CI runs the suite on Python 3.10–3.13 and verifies the package builds on every push and pull request.
 
 ---
 
@@ -225,4 +239,4 @@ pytest
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
