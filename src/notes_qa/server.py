@@ -33,6 +33,23 @@ from notes_qa.ingest import (
 )
 from notes_qa.retrieve import retrieve_chunks
 
+# Public mode is for hosted demos (e.g. Hugging Face Spaces). It stops visitors from
+# indexing arbitrary server folders, wiping the shared index, or uploading huge or
+# unsupported files, and seeds the sample notes so the demo works on first visit.
+PUBLIC_MODE = os.getenv("NOTES_QA_PUBLIC", "").strip().lower() in {"1", "true", "yes"}
+SAMPLE_NOTES_DIR = Path(os.getenv("NOTES_QA_SAMPLE_DIR", "./sample_notes")).resolve()
+UPLOAD_DIR = Path(os.getenv("NOTES_QA_UPLOAD_DIR", "./uploaded_notes")).resolve()
+MAX_UPLOAD_BYTES = int(os.getenv("NOTES_QA_MAX_UPLOAD_MB", "10")) * 1024 * 1024
+MAX_UPLOAD_FILES = int(os.getenv("NOTES_QA_MAX_UPLOAD_FILES", "5"))
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
 
 SUPPORTED_UPLOAD_SUFFIXES = {".pdf", ".md", ".markdown"}
 
@@ -72,6 +89,20 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    if PUBLIC_MODE:
+        @app.on_event("startup")
+        async def seed_sample_notes() -> None:
+            """Index the bundled sample notes so a fresh demo has something to answer from."""
+            if not SAMPLE_NOTES_DIR.is_dir():
+                return
+            client = get_chroma_client(get_db_path())
+            try:
+                if client.get_collection(COLLECTION_NAME).count() > 0:
+                    return
+            except Exception:
+                pass
+            ingest_folder(folder=SAMPLE_NOTES_DIR, rebuild=False)
+
     @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
         """Get vector database and configuration status."""
@@ -98,6 +129,7 @@ def create_app() -> FastAPI:
             "default_model": DEFAULT_GEMINI_MODEL if default_prov == "gemini" else DEFAULT_ANTHROPIC_MODEL,
             "gemini_model": DEFAULT_GEMINI_MODEL,
             "anthropic_model": DEFAULT_ANTHROPIC_MODEL,
+            "public_mode": PUBLIC_MODE,
         }
 
     @app.post("/api/ingest")
@@ -108,9 +140,17 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Folder '{req.folder}' does not exist.")
         if not folder_path.is_dir():
             raise HTTPException(status_code=400, detail=f"Path '{req.folder}' is not a directory.")
+        rebuild = req.rebuild
+        if PUBLIC_MODE:
+            if not any(_is_within(folder_path, root) for root in (SAMPLE_NOTES_DIR, UPLOAD_DIR)):
+                raise HTTPException(
+                    status_code=403,
+                    detail="On the public demo you can index the sample notes or upload your own files.",
+                )
+            rebuild = False  # the index is shared by every visitor
 
         try:
-            stats = ingest_folder(folder=folder_path, rebuild=req.rebuild)
+            stats = ingest_folder(folder=folder_path, rebuild=rebuild)
             return {"success": True, "stats": stats}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -124,8 +164,16 @@ def create_app() -> FastAPI:
         if not files:
             raise HTTPException(status_code=400, detail="No files uploaded.")
 
-        upload_dir = Path("./uploaded_notes").resolve()
-        upload_dir.mkdir(exist_ok=True)
+        upload_dir = UPLOAD_DIR
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        if PUBLIC_MODE:
+            if len(files) > MAX_UPLOAD_FILES:
+                raise HTTPException(status_code=400, detail=f"Upload at most {MAX_UPLOAD_FILES} files at a time.")
+            for file in files:
+                if Path(file.filename or "").suffix.lower() not in SUPPORTED_UPLOAD_SUFFIXES:
+                    raise HTTPException(status_code=400, detail=f"'{file.filename}' is not a PDF or Markdown file.")
+            rebuild = False  # the index is shared by every visitor
 
         saved_files = []
         rejected_files = []
@@ -136,7 +184,20 @@ def create_app() -> FastAPI:
                 continue
             dest = upload_dir / filename
             with dest.open("wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+                if PUBLIC_MODE:
+                    written = 0
+                    while chunk := file.file.read(1024 * 1024):
+                        written += len(chunk)
+                        if written > MAX_UPLOAD_BYTES:
+                            buffer.close()
+                            dest.unlink(missing_ok=True)
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"'{filename}' is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+                            )
+                        buffer.write(chunk)
+                else:
+                    shutil.copyfileobj(file.file, buffer)
             saved_files.append(str(dest))
 
         if not saved_files:

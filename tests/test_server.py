@@ -132,3 +132,59 @@ def test_ui_works_without_cdn_assets(client):
     assert "if (window.tailwind)" in html
     assert "if (window.marked)" in html
     assert "marked.parse(data.answer" not in html
+
+
+# --- public (hosted demo) mode ---
+
+@pytest.fixture
+def public_client(tmp_path, monkeypatch):
+    import notes_qa.server as server
+
+    samples = tmp_path / "sample_notes"
+    samples.mkdir()
+    uploads = tmp_path / "uploaded_notes"
+    monkeypatch.setattr(server, "PUBLIC_MODE", True)
+    monkeypatch.setattr(server, "SAMPLE_NOTES_DIR", samples.resolve())
+    monkeypatch.setattr(server, "UPLOAD_DIR", uploads.resolve())
+    monkeypatch.setattr(server, "MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(server, "ingest_folder", MagicMock(return_value={"chunks": 0}))
+    return TestClient(server.create_app()), server, samples
+
+
+def test_public_mode_blocks_ingesting_other_folders(public_client, tmp_path):
+    client, server, _ = public_client
+    outside = tmp_path / "server_files"
+    outside.mkdir()
+    response = client.post("/api/ingest", json={"folder": str(outside)})
+    assert response.status_code == 403
+    server.ingest_folder.assert_not_called()
+
+
+def test_public_mode_allows_samples_but_never_rebuilds(public_client):
+    client, server, samples = public_client
+    response = client.post("/api/ingest", json={"folder": str(samples), "rebuild": True})
+    assert response.status_code == 200
+    assert server.ingest_folder.call_args.kwargs["rebuild"] is False
+
+
+def test_public_mode_rejects_unsupported_upload(public_client):
+    client, server, _ = public_client
+    response = client.post("/api/upload", files=[("files", ("evil.exe", b"MZ", "application/octet-stream"))])
+    assert response.status_code == 400
+    server.ingest_folder.assert_not_called()
+
+
+def test_public_mode_rejects_oversized_upload(public_client):
+    client, server, _ = public_client
+    response = client.post("/api/upload", files=[("files", ("big.md", b"#" * 4096, "text/markdown"))])
+    assert response.status_code == 413
+    assert not (server.UPLOAD_DIR / "big.md").exists()
+    server.ingest_folder.assert_not_called()
+
+
+def test_public_mode_accepts_small_markdown(public_client):
+    client, server, _ = public_client
+    response = client.post("/api/upload?rebuild=true", files=[("files", ("note.md", b"# Hi\nhello", "text/markdown"))])
+    assert response.status_code == 200
+    assert (server.UPLOAD_DIR / "note.md").exists()
+    assert server.ingest_folder.call_args.kwargs["rebuild"] is False

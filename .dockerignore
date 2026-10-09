@@ -1,0 +1,11 @@
+# never ship secrets or local data
+.env
+.db/
+*.db
+uploaded_notes/
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+*.egg-info/
+tests/
