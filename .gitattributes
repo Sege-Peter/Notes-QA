@@ -1,0 +1,3 @@
+# keep binary/vendored files byte-exact (no CRLF conversion)
+*.pdf binary
+docs/vendor/*.mjs -text
