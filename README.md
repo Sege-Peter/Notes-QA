@@ -1,5 +1,7 @@
 # notes-qa
 
+**Live demo:** https://sege-peter.github.io/Notes-QA/ (runs entirely in your browser, nothing is uploaded)
+
 A RAG (Retrieval-Augmented Generation) tool that lets you ask questions
 over your own PDFs and Markdown notes — answers come back grounded in your
 actual documents, with citations back to the source file and page/section.
